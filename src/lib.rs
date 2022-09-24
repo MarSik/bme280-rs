@@ -67,7 +67,7 @@ pub mod i2c;
 pub mod spi;
 
 use core::marker::PhantomData;
-use embedded_hal::delay::blocking::DelayUs;
+use embedded_hal::blocking::delay::DelayUs;
 
 #[cfg(feature = "serde")]
 use serde::Serialize;
@@ -170,6 +170,8 @@ pub enum Error<E> {
     UnsupportedChip,
     /// Delay error
     Delay,
+    /// Sensor is sleeping
+    Sleeping,
 }
 
 #[cfg(feature = "with_defmt")]
@@ -523,7 +525,7 @@ where
 
     /// Initialize the sensor with default configuration
     /// Humidity 1x oversampling, Pressure 16x oversampling, Temperature 2x oversampling
-    pub fn init_default<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
+    pub fn init_default<D: DelayUs<u16>>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
         let cfg = Configuration::default()
             .with_humidity_oversampling(Oversampling::Oversampling1X)
             .with_pressure_oversampling(Oversampling::Oversampling16X)
@@ -535,7 +537,7 @@ where
     /// Initializes the BME280, applying the given config.
     /// This checks the chip id, resets the device
     /// and then calibrates and initializes it
-    pub fn init<D: DelayUs>(
+    pub fn init<D: DelayUs<u16>>(
         &mut self,
         delay: &mut D,
         config: Configuration,
@@ -557,10 +559,10 @@ where
     }
 
     /// Reset the sensor
-    pub fn soft_reset<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
+    pub fn soft_reset<D: DelayUs<u16>>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
         self.interface
             .write_register(BME280_RESET_ADDR, BME280_SOFT_RESET_CMD)?;
-        delay.delay_ms(2).map_err(|_| Error::Delay)?; // startup time is 2ms
+        delay.delay_us(2000); // startup time is 2ms
         Ok(())
     }
 
@@ -584,7 +586,7 @@ where
 
     /// Apply sensor configuration
     /// This resets the sensor if it is in sleep mode
-    pub fn configure<D: DelayUs>(
+    pub fn configure<D: DelayUs<u16>>(
         &mut self,
         delay: &mut D,
         config: Configuration,
@@ -598,13 +600,13 @@ where
     }
 
     /// Configure the sensor
-    pub fn try_configure<D: DelayUs>(
+    pub fn try_configure(
         &mut self,
         config: Configuration,
     ) -> Result<(), Error<I::Error>> {
         match self.mode()? {
             SensorMode::Sleep => {}
-            _ => return Err(Error::Delay),
+            _ => return Err(Error::Sleeping),
         };
 
         self.configure_internal(config)
@@ -655,13 +657,13 @@ where
     }
 
     /// Trigger measurement
-    pub fn forced<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
+    pub fn forced<D: DelayUs<u16>>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
         self.set_mode(BME280_FORCED_MODE, delay)
     }
 
     /// Put sensor into specific mode (like sleep)
     /// Reset the sensor first when in sleep mode
-    pub fn set_mode<D: DelayUs>(&mut self, mode: u8, delay: &mut D) -> Result<(), Error<I::Error>> {
+    pub fn set_mode<D: DelayUs<u16>>(&mut self, mode: u8, delay: &mut D) -> Result<(), Error<I::Error>> {
         match self.mode()? {
             SensorMode::Sleep => {}
             _ => self.soft_reset(delay)?,
@@ -671,7 +673,7 @@ where
 
     /// Trigger measurement and return, it is the resposibility
     /// of the caller to handle sleep mode wakeup and waiting for result
-    pub fn forced_nowait<D: DelayUs>(&mut self) -> Result<(), Error<I::Error>> {
+    pub fn forced_nowait(&mut self) -> Result<(), Error<I::Error>> {
         self.try_set_mode(BME280_FORCED_MODE)
     }
 
@@ -688,12 +690,12 @@ where
     }
 
     /// Captures and processes sensor data for temperature, pressure, and humidity
-    pub fn measure<D: DelayUs>(
+    pub fn measure<D: DelayUs<u16>>(
         &mut self,
         delay: &mut D,
     ) -> Result<Measurements<I::Error>, Error<I::Error>> {
         self.forced(delay)?;
-        delay.delay_ms(40).map_err(|_| Error::Delay)?; // await measurement
+        delay.delay_us(40000); // await measurement
         self.read_result()
     }
 

@@ -1,6 +1,6 @@
 //! BME280 driver for sensors attached via I2C.
 
-use embedded_hal::i2c::{blocking::I2c, ErrorType};
+use embedded_hal::blocking::i2c::{Write, WriteRead};
 use crate::Interface;
 
 use super::{
@@ -20,7 +20,10 @@ pub struct I2CInterface<I2C> {
     address: u8,
 }
 
-impl <I2C> I2CInterface<I2C> {
+impl <I2C, I2CE> I2CInterface<I2C>
+    where
+        I2C: WriteRead<Error = I2CE> + Write<Error = I2CE>,
+{
     /// Create a new BME280 struct using the primary I²C address `0x76`
     pub fn new_primary(i2c: I2C) -> Self {
         Self::new(i2c, BME280_I2C_ADDR_PRIMARY)
@@ -37,13 +40,13 @@ impl <I2C> I2CInterface<I2C> {
     }
 }
 
-impl<I2C> Interface for I2CInterface<I2C>
+impl<I2C, I2CE> Interface for I2CInterface<I2C>
 where
-    I2C: I2c + ErrorType,
+    I2C: WriteRead<Error = I2CE> + Write<Error = I2CE>,
 {
-    type Error = I2C::Error;
+    type Error = I2CE;
 
-    fn read_register(&mut self, register: u8) -> Result<u8, Error<I2C::Error>> {
+    fn read_register(&mut self, register: u8) -> Result<u8, Error<Self::Error>> {
         let mut data: [u8; 1] = [0];
         self.i2c
             .write_read(self.address, &[register], &mut data)
@@ -54,7 +57,7 @@ where
     fn read_data(
         &mut self,
         register: u8,
-    ) -> Result<[u8; BME280_P_T_H_DATA_LEN], Error<I2C::Error>> {
+    ) -> Result<[u8; BME280_P_T_H_DATA_LEN], Error<Self::Error>> {
         let mut data = [0; BME280_P_T_H_DATA_LEN];
         self.i2c
             .write_read(self.address, &[register], &mut data)
@@ -65,7 +68,7 @@ where
     fn read_pt_calib_data(
         &mut self,
         register: u8,
-    ) -> Result<[u8; BME280_P_T_CALIB_DATA_LEN], Error<I2C::Error>> {
+    ) -> Result<[u8; BME280_P_T_CALIB_DATA_LEN], Error<Self::Error>> {
         let mut data = [0; BME280_P_T_CALIB_DATA_LEN];
         self.i2c
             .write_read(self.address, &[register], &mut data)
@@ -76,7 +79,7 @@ where
     fn read_h_calib_data(
         &mut self,
         register: u8,
-    ) -> Result<[u8; BME280_H_CALIB_DATA_LEN], Error<I2C::Error>> {
+    ) -> Result<[u8; BME280_H_CALIB_DATA_LEN], Error<Self::Error>> {
         let mut data = [0; BME280_H_CALIB_DATA_LEN];
         self.i2c
             .write_read(self.address, &[register], &mut data)
@@ -84,7 +87,7 @@ where
         Ok(data)
     }
 
-    fn write_register(&mut self, register: u8, payload: u8) -> Result<(), Error<I2C::Error>> {
+    fn write_register(&mut self, register: u8, payload: u8) -> Result<(), Error<Self::Error>> {
         self.i2c
             .write(self.address, &[register, payload])
             .map_err(Error::Bus)

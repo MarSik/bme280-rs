@@ -1,7 +1,7 @@
 //! BME280 driver for sensors attached via SPI.
 
-use embedded_hal::digital::blocking::OutputPin;
-use embedded_hal::spi::blocking::Transfer;
+use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::blocking::spi::Transfer;
 use crate::Interface;
 
 use super::{
@@ -77,9 +77,9 @@ where
             .set_low()
             .map_err(|e| Error::Bus(SPIError::Pin(e)))?;
         // If the first bit is 0, the register is written.
-        let transfer = [register & 0x7f, payload];
+        let mut transfer = [register & 0x7f, payload];
         self.spi
-            .transfer(&mut [], &transfer)
+            .transfer(&mut transfer)
             .map_err(|e| Error::Bus(SPIError::SPI(e)))?;
         self.cs
             .set_high()
@@ -101,8 +101,10 @@ where
         self.cs
             .set_low()
             .map_err(|e| Error::Bus(SPIError::Pin(e)))?;
+        // First bit high indicates read
+        data[0] = register | 0x80;
         self.spi
-            .transfer(data, &[register])
+            .transfer(data)
             .map_err(|e| Error::Bus(SPIError::SPI(e)))?;
         self.cs
             .set_high()
