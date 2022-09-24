@@ -1,77 +1,35 @@
 //! BME280 driver for sensors attached via SPI.
 
-use embedded_hal::delay::blocking::DelayUs;
 use embedded_hal::digital::blocking::OutputPin;
 use embedded_hal::spi::blocking::Transfer;
+use crate::Interface;
 
 use super::{
-    BME280Common, Configuration, Error, IIRFilter, Interface, Measurements, Oversampling,
+    Error,
     BME280_H_CALIB_DATA_LEN, BME280_P_T_CALIB_DATA_LEN, BME280_P_T_H_DATA_LEN,
 };
 
-/// Representation of a BME280
-#[derive(Debug, Default)]
-pub struct BME280<SPI, CS> {
-    common: BME280Common<SPIInterface<SPI, CS>>,
-}
-
-impl<SPI, CS, SPIE, PinE> BME280<SPI, CS>
-where
-    SPI: Transfer<u8, Error = SPIE>,
-    CS: OutputPin<Error = PinE>,
-{
-    /// Create a new BME280 struct
-    pub fn new(spi: SPI, mut cs: CS) -> Result<Self, Error<SPIError<SPIE, PinE>>> {
-        // Deassert chip-select.
-        cs.set_high().map_err(|e| Error::Bus(SPIError::Pin(e)))?;
-
-        Ok(BME280 {
-            common: BME280Common {
-                interface: SPIInterface { spi, cs },
-                calibration: None,
-            },
-        })
-    }
-
-    /// Initializes the BME280.
-    /// This configures 2x temperature oversampling, 16x pressure oversampling, and the IIR filter
-    /// coefficient 16.
-    pub fn init<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<SPIError<SPIE, PinE>>> {
-        self.common.init(
-            delay,
-            Configuration::default()
-                .with_humidity_oversampling(Oversampling::Oversampling1X)
-                .with_pressure_oversampling(Oversampling::Oversampling16X)
-                .with_temperature_oversampling(Oversampling::Oversampling2X)
-                .with_iir_filter(IIRFilter::Coefficient16),
-        )
-    }
-
-    /// Initializes the BME280, applying the given configuration.
-    pub fn init_with_config<D: DelayUs>(
-        &mut self,
-        delay: &mut D,
-        config: Configuration,
-    ) -> Result<(), Error<SPIError<SPIE, PinE>>> {
-        self.common.init(delay, config)
-    }
-
-    /// Captures and processes sensor data for temperature, pressure, and humidity
-    pub fn measure<D: DelayUs>(
-        &mut self,
-        delay: &mut D,
-    ) -> Result<Measurements<SPIError<SPIE, PinE>>, Error<SPIError<SPIE, PinE>>> {
-        self.common.measure(delay)
-    }
-}
-
 /// Register access functions for SPI
 #[derive(Debug, Default)]
-struct SPIInterface<SPI, CS> {
+pub struct SPIInterface<SPI, CS> {
     /// concrete SPI device implementation
     spi: SPI,
     /// chip-select pin
     cs: CS,
+}
+
+impl<SPI, CS>  SPIInterface<SPI, CS>
+    where
+        SPI: Transfer<u8>,
+        CS: OutputPin,
+{
+    /// Create a new BME280 struct
+    pub fn new(spi: SPI, mut cs: CS) -> Result<Self, Error<SPIError<SPI::Error, CS::Error>>> {
+        // Deassert chip-select.
+        cs.set_high().map_err(|e| Error::Bus(SPIError::Pin(e)))?;
+
+        Ok(SPIInterface { spi, cs })
+    }
 }
 
 impl<SPI, CS> Interface for SPIInterface<SPI, CS>

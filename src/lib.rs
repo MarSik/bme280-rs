@@ -84,6 +84,8 @@ use std::fmt;
 
 const BME280_PWR_CTRL_ADDR: u8 = 0xF4;
 const BME280_CTRL_HUM_ADDR: u8 = 0xF2;
+const BME280_STATUS_ADDR: u8 = 0xF3;
+
 const BME280_CTRL_MEAS_ADDR: u8 = 0xF4;
 const BME280_CONFIG_ADDR: u8 = 0xF5;
 
@@ -467,44 +469,73 @@ impl<E> Measurements<E> {
     }
 }
 
-trait Interface {
+/// Interface for talking to BME280
+pub trait Interface {
+    /// Error type returned by this interface
     type Error;
 
+    /// Read sensor register
     fn read_register(&mut self, register: u8) -> Result<u8, Error<Self::Error>>;
 
+    /// Read mesurement data
     fn read_data(
         &mut self,
         register: u8,
     ) -> Result<[u8; BME280_P_T_H_DATA_LEN], Error<Self::Error>>;
 
+    /// Read pressure and temperature calibration data
     fn read_pt_calib_data(
         &mut self,
         register: u8,
     ) -> Result<[u8; BME280_P_T_CALIB_DATA_LEN], Error<Self::Error>>;
 
+    /// Read humidity calibration data
     fn read_h_calib_data(
         &mut self,
         register: u8,
     ) -> Result<[u8; BME280_H_CALIB_DATA_LEN], Error<Self::Error>>;
 
+    /// Write register
     fn write_register(&mut self, register: u8, payload: u8) -> Result<(), Error<Self::Error>>;
 }
 
 /// Common driver code for I2C and SPI interfaces
 #[derive(Debug, Default)]
-struct BME280Common<I> {
+pub struct BME280<I> {
     /// Interface to the chip (either I2C or SPI)
     interface: I,
     /// calibration data
     calibration: Option<CalibrationData>,
 }
 
-impl<I> BME280Common<I>
+impl<I> BME280<I>
 where
     I: Interface,
 {
+    /// Create new instance of BME280 driver
+    /// param interface is an instance of the desired interface
+    pub fn new(interface: I) -> Self {
+        Self {
+            interface: interface,
+            calibration: None
+        }
+    }
+
+    /// Initialize the sensor with default configuration
+    /// Humidity 1x oversampling, Pressure 16x oversampling, Temperature 2x oversampling
+    pub fn init_default<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
+        let cfg = Configuration::default()
+            .with_humidity_oversampling(Oversampling::Oversampling1X)
+            .with_pressure_oversampling(Oversampling::Oversampling16X)
+            .with_temperature_oversampling(Oversampling::Oversampling2X)
+            .with_iir_filter(IIRFilter::Coefficient16);
+        self.init(delay, cfg)
+    }
+
     /// Initializes the BME280, applying the given config.
-    fn init<D: DelayUs>(
+    /// This checks the chip id, resets the device
+    /// and then calibrates and initializes it
+    pub fn init<D: DelayUs>(
         &mut self,
         delay: &mut D,
         config: Configuration,
@@ -515,7 +546,8 @@ where
         self.configure(delay, config)
     }
 
-    fn verify_chip_id(&mut self) -> Result<(), Error<I::Error>> {
+    /// Verify the chip connected is BME280
+    pub fn verify_chip_id(&mut self) -> Result<(), Error<I::Error>> {
         let chip_id = self.interface.read_register(BME280_CHIP_ID_ADDR)?;
         if chip_id == BME280_CHIP_ID || chip_id == BMP280_CHIP_ID {
             Ok(())
@@ -524,14 +556,24 @@ where
         }
     }
 
-    fn soft_reset<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
+    /// Reset the sensor
+    pub fn soft_reset<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
         self.interface
             .write_register(BME280_RESET_ADDR, BME280_SOFT_RESET_CMD)?;
         delay.delay_ms(2).map_err(|_| Error::Delay)?; // startup time is 2ms
         Ok(())
     }
 
-    fn calibrate(&mut self) -> Result<(), Error<I::Error>> {
+    /// Trigger sensor reset and return
+    /// You have to wait 2 ms after reset
+    pub fn soft_reset_nowait(&mut self) -> Result<(), Error<I::Error>> {
+        self.interface
+            .write_register(BME280_RESET_ADDR, BME280_SOFT_RESET_CMD)?;
+        Ok(())
+    }
+
+    /// Load calibration data
+    pub fn calibrate(&mut self) -> Result<(), Error<I::Error>> {
         let pt_calib_data = self
             .interface
             .read_pt_calib_data(BME280_P_T_CALIB_DATA_ADDR)?;
@@ -540,7 +582,9 @@ where
         Ok(())
     }
 
-    fn configure<D: DelayUs>(
+    /// Apply sensor configuration
+    /// This resets the sensor if it is in sleep mode
+    pub fn configure<D: DelayUs>(
         &mut self,
         delay: &mut D,
         config: Configuration,
@@ -550,6 +594,23 @@ where
             _ => self.soft_reset(delay)?,
         };
 
+        self.configure_internal(config)
+    }
+
+    /// Configure the sensor
+    pub fn try_configure<D: DelayUs>(
+        &mut self,
+        config: Configuration,
+    ) -> Result<(), Error<I::Error>> {
+        match self.mode()? {
+            SensorMode::Sleep => {}
+            _ => return Err(Error::Delay),
+        };
+
+        self.configure_internal(config)
+    }
+
+    fn configure_internal(&mut self, config: Configuration) -> Result<(), Error<I::Error>> {
         self.interface.write_register(
             BME280_CTRL_HUM_ADDR,
             config.humidity_oversampling.bits() & BME280_CTRL_HUM_MSK,
@@ -582,7 +643,8 @@ where
         self.interface.write_register(BME280_CONFIG_ADDR, data)
     }
 
-    fn mode(&mut self) -> Result<SensorMode, Error<I::Error>> {
+    /// Get current mode
+    pub fn mode(&mut self) -> Result<SensorMode, Error<I::Error>> {
         let data = self.interface.read_register(BME280_PWR_CTRL_ADDR)?;
         match data & BME280_SENSOR_MODE_MSK {
             BME280_SLEEP_MODE => Ok(SensorMode::Sleep),
@@ -592,14 +654,33 @@ where
         }
     }
 
-    fn forced<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
+    /// Trigger measurement
+    pub fn forced<D: DelayUs>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>> {
         self.set_mode(BME280_FORCED_MODE, delay)
     }
 
-    fn set_mode<D: DelayUs>(&mut self, mode: u8, delay: &mut D) -> Result<(), Error<I::Error>> {
+    /// Put sensor into specific mode (like sleep)
+    /// Reset the sensor first when in sleep mode
+    pub fn set_mode<D: DelayUs>(&mut self, mode: u8, delay: &mut D) -> Result<(), Error<I::Error>> {
         match self.mode()? {
             SensorMode::Sleep => {}
             _ => self.soft_reset(delay)?,
+        };
+        self.try_set_mode(mode)
+    }
+
+    /// Trigger measurement and return, it is the resposibility
+    /// of the caller to handle sleep mode wakeup and waiting for result
+    pub fn forced_nowait<D: DelayUs>(&mut self) -> Result<(), Error<I::Error>> {
+        self.try_set_mode(BME280_FORCED_MODE)
+    }
+
+    /// Set mode. It is the responsibility of
+    /// the caller to handle sleep mode wakeup
+    pub fn try_set_mode(&mut self, mode: u8) -> Result<(), Error<I::Error>> {
+        match self.mode()? {
+            SensorMode::Sleep => {}
+            _ => return Err(Error::Delay), // TODO find better error type
         };
         let data = self.interface.read_register(BME280_PWR_CTRL_ADDR)?;
         let data = set_bits!(data, BME280_SENSOR_MODE_MSK, 0, mode);
@@ -607,12 +688,28 @@ where
     }
 
     /// Captures and processes sensor data for temperature, pressure, and humidity
-    fn measure<D: DelayUs>(
+    pub fn measure<D: DelayUs>(
         &mut self,
         delay: &mut D,
     ) -> Result<Measurements<I::Error>, Error<I::Error>> {
         self.forced(delay)?;
         delay.delay_ms(40).map_err(|_| Error::Delay)?; // await measurement
+        self.read_result()
+    }
+
+    /// Check if the last measurement was finished
+    pub fn result_ready(&mut self) -> Result<bool, Error<I::Error>> {
+        let status = self.interface.read_register(BME280_STATUS_ADDR);
+        match status {
+            Ok(s) => {
+                Ok((s & (1 << 3)) == 0)
+            },
+            Err(e) => Err(e)
+        }
+    }
+
+    /// Retrieve the last results
+    pub fn read_result(&mut self) -> Result<Measurements<I::Error>, Error<I::Error>> {
         let measurements = self.interface.read_data(BME280_DATA_ADDR)?;
         match self.calibration.as_mut() {
             Some(calibration) => {
